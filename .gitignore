@@ -1,0 +1,19 @@
+# 忽略 Python 快取
+__pycache__/
+*.pyc
+
+#  忽略模型權重檔 
+*.pth
+*.pt
+model/
+weights/
+
+# 忽略環境變數與敏感資料
+.env
+.venv/
+venv/
+.vscode/
+
+# 忽略作業系統產生的檔案
+.DS_Store
+Thumbs.db

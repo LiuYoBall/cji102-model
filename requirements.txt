@@ -1,0 +1,27 @@
+# --- Web Server ---
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# --- AI Core ---
+torch==2.1.2
+torchvision==0.16.2
+
+# --- Model Architecture ---
+timm==0.9.12
+
+# --- Image Processing ---
+opencv-python-headless==4.9.0.80
+# Pillow 10.2.0 與新版 Python 相容性較好
+Pillow==10.2.0 
+# Grad-CAM
+grad-cam==1.5.0
+
+# --- Data & Utils ---
+# 強制鎖定 numpy 1.26.4 以相容 Pandas 2.x
+numpy==1.26.4
+pandas==2.2.0
+scikit-learn==1.4.0
+
+# --- Cloud ---
+google-cloud-storage==2.14.0
