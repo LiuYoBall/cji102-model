@@ -2,9 +2,12 @@
 __pycache__/
 *.pyc
 
-#  忽略模型權重檔 
+#  忽略模型權重檔與金鑰
 *.pth
 *.pt
+*.json
+*.md
+test/
 model/
 weights/
 
@@ -14,6 +17,8 @@ weights/
 venv/
 .vscode/
 
+
 # 忽略作業系統產生的檔案
 .DS_Store
 Thumbs.db
+

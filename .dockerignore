@@ -1,0 +1,26 @@
+# --- 1. 版本控制與設定檔  ---
+.git
+.gitignore
+.dockerignore
+deploy.md
+README.md
+
+# --- 2. 本地開發與測試 ---
+__pycache__
+*.pyc
+.DS_Store
+.venv
+venv/
+env/
+.env             
+test_api_json.py # 客戶端測試腳本 
+tests/           # 單元測試資料夾
+
+# --- 3. 敏感資料  ---
+*.json           #  GCP Key 
+!config.json     # (若需要某個特定的 config.json，用 ! 例外放行)
+
+# --- 4. 大型模型檔案 (用掛載或下載，不打包) ---
+*.pth
+*.pt
+model/           
