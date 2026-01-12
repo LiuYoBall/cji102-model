@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # --- 設定路徑與變數 ---
 MODEL_MOUNT_PATH = os.getenv("MODEL_MOUNT_PATH", "/mnt/models") 
-CFP_MODEL_FILENAME = "0104_RETFound_inference.pth"
+CFP_MODEL_FILENAME = "models/0104_RETFound_inference.pth"
 YOLO_MODEL_FILENAME = "best_yolo.pt" # 預留
 OCT_MODEL_FILENAME = "oct_model.pth" # 預留
 
