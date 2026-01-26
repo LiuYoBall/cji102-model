@@ -5,12 +5,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import  Optional
 
-# 引用我們寫好的模組
-# controller 已經修改為接收 gcs_path 
+# --- 引用模組 ---
 from cfp_classify import load_cfp_model
-from controller import process_fundus_image 
+from segmentation import load_yolo_model 
+from controller import process_fundus_image
 
 # --- 設定 Log ---
 logging.basicConfig(level=logging.INFO)
@@ -18,15 +18,18 @@ logger = logging.getLogger(__name__)
 
 # --- 設定路徑與變數 ---
 MODEL_MOUNT_PATH = os.getenv("MODEL_MOUNT_PATH", "/mnt/models") 
-CFP_MODEL_FILENAME = "models/0104_RETFound_inference.pth"
-YOLO_MODEL_FILENAME = "best_yolo.pt" # 預留
-OCT_MODEL_FILENAME = "oct_model.pth" # 預留
+CFP_MODEL_FILENAME = os.getenv("CFP_MODEL_FILENAME", "models/0114_ema_RETFound.pth")
+YOLO_MODEL_FILENAME = os.getenv("YOLO_MODEL_FILENAME", "models/best_yolo.pt")
+
+# 組合路徑
+cfp_path = os.path.join(MODEL_MOUNT_PATH, CFP_MODEL_FILENAME)
+yolo_path = os.path.join(MODEL_MOUNT_PATH, YOLO_MODEL_FILENAME)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # --- Pydantic Model: 定義輸入 JSON 格式 ---
 class PredictionRequest(BaseModel):
-    image_gcs_path: str = Field(..., description="GCS上的圖片路徑")
+    image_gcs_path: str = Field(..., description="圖片路徑")
     request_id: Optional[str] = None
 
 # --- 1. Lifespan: 啟動與關閉生命週期管理 ---
@@ -38,12 +41,11 @@ async def lifespan(app: FastAPI):
     models = {
         "cfp": None,
         "yolo": None,
-        "oct": None
     }
 
     # 建構路徑
     cfp_path = os.path.join(MODEL_MOUNT_PATH, CFP_MODEL_FILENAME)
-    # oct_path = os.path.join(MODEL_MOUNT_PATH, OCT_MODEL_FILENAME) # 預留
+    yolo_path = os.path.join(MODEL_MOUNT_PATH, YOLO_MODEL_FILENAME)
 
     # --- 載入 CFP 模型 ---
     try:
@@ -56,18 +58,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Error loading CFP model: {e}")
 
-    # --- (預留) 載入 YOLO 模型 ---
-    # try:
-    #     models["yolo"] = load_yolo_model(yolo_path, device)
-    # except...
+    # --- B. 載入 YOLO 模型 ---
+    try:
+        if os.path.exists(yolo_path):
+            # 假設 load_yolo_model 接受路徑與 device
+            models["yolo"] = load_yolo_model(yolo_path, device) 
+            logger.info(f"✅ YOLO Model loaded from: {yolo_path}")
+        else:
+            logger.warning(f"⚠️ YOLO model not found at {yolo_path}, segmentation will be disabled.")
+    except Exception as e:
+        logger.error(f"❌ Error loading YOLO model: {e}")
 
-    # --- (預留) 載入 OCT 模型 ---
-    # try:
-    #     if os.path.exists(oct_path):
-    #          models["oct"] = load_oct_model(oct_path, device)
-    # except...
-
-    # [關鍵] 將模型存入 app.state，供全域存取
+    # 模型存入 app.state，供全域存取
     app.state.models = models
 
     yield  # 應用程式運行中...
@@ -85,6 +87,7 @@ app = FastAPI(lifespan=lifespan)
 def health_check(request: Request):
     """檢查服務與模型狀態"""
     models = request.app.state.models
+    # 只要 CFP 活著就算 Ready (YOLO 是選配功能)
     status = "ready" if models.get("cfp") is not None else "partial_service"
     
     return {
@@ -122,20 +125,8 @@ async def predict_cfp_endpoint(
         return JSONResponse(content=result)
 
     except Exception as e:
-        # Log error...
+        logger.error(f"Prediction Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/predict/oct")
-async def predict_oct_endpoint(
-    request: Request, 
-    payload: PredictionRequest
-):
-    return JSONResponse(content={
-        "status": "pending",
-        "message": "OCT inference not implemented",
-        "source": payload.image_gcs_path
-    })
 
 if __name__ == "__main__":
     import uvicorn

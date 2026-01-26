@@ -26,3 +26,9 @@ scikit-learn==1.4.0
 
 # --- Cloud ---
 google-cloud-storage==2.14.0
+
+# --- YOLO Segmentation ---
+# 必須 >= 8.3.0 才能支援 YOLO11 模型
+ultralytics>=8.3.0
+# ultralytics 內部依賴
+matplotlib>=3.3.0

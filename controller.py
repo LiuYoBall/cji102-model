@@ -1,20 +1,22 @@
+import asyncio
+import functools
 import uuid
 import logging
+import os
 from google.cloud import storage
 
 # 引用您的模組 (確認 predict_cfp 內部是用 PIL 處理 bytes)
 from cfp_classify import predict_cfp
 from inference import analyze_results
 from xai import generate_xai_image
-# from segmentation import run_yolo_segmentation (預留)
+from segmentation import run_yolo_segmentation
 
 # --- 設定 Logging ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- GCS 輸出設定 ---
-# 這是用來存放「AI 分析結果圖片」的 Bucket
-OUTPUT_BUCKET_NAME = "fundus-ai-project" 
+OUTPUT_BUCKET_NAME = os.getenv("OUTPUT_BUCKET_NAME", "fundus-ai-project") 
 
 def download_bytes_from_gcs(gcs_uri: str) -> bytes:
     """
@@ -28,10 +30,10 @@ def download_bytes_from_gcs(gcs_uri: str) -> bytes:
         
         # 2. 分割 Bucket 與 Blob 名稱
         if "/" not in clean_uri:
-            raise ValueError(f"Invalid GCS URI format: {gcs_uri}")
-            
-        bucket_name, blob_name = clean_uri.split("/", 1)
+            raise ValueError(f"Invalid GCS URI format: {gcs_uri}")    
         
+        bucket_name, blob_name = clean_uri.split("/", 1)
+
         # 3. 下載
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
@@ -45,22 +47,31 @@ def download_bytes_from_gcs(gcs_uri: str) -> bytes:
 
 async def upload_to_gcs(file_data: bytes, destination_blob_name: str, content_type="image/jpeg"):
     """
-    上傳圖片到 Output Bucket 並回傳公開 URL
+    上傳圖片到 Output Bucket 並回傳 URL
     """
-    try:
-        storage_client = storage.Client()
-        bucket = storage_client.bucket(OUTPUT_BUCKET_NAME) # 使用上方定義的變數
-        blob = bucket.blob(destination_blob_name)
-        
-        # 上傳 (同步方法，但在 Cloud Run 並發量不高時可接受)
-        blob.upload_from_string(file_data, content_type=content_type)
-        
-        logger.info(f"⬆️ Uploaded to: {destination_blob_name}")
-        return blob.public_url
-        
-    except Exception as e:
-        logger.error(f"❌ GCS Upload Error: {e}")
-        return None
+    def _sync_upload():
+        try:
+            storage_client = storage.Client()
+            bucket = storage_client.bucket(OUTPUT_BUCKET_NAME)
+            blob = bucket.blob(destination_blob_name)
+            
+            # 這是同步操作，會花費時間
+            blob.upload_from_string(file_data, content_type=content_type)
+            
+            logger.info(f"⬆️ Uploaded to: {destination_blob_name}")
+            return blob.public_url
+        except Exception as e:
+            logger.error(f"❌ GCS Upload Error: {e}")
+            return None
+
+    # 取得當前的 Event Loop
+    loop = asyncio.get_running_loop()
+    
+    # 關鍵：將同步函式丟到 ThreadPoolExecutor 執行
+    # run_in_executor(None, ...) 的 None 代表使用預設的 ThreadPool
+    result = await loop.run_in_executor(None, _sync_upload)
+    
+    return result
 
 async def process_fundus_image(gcs_path: str, model_cfp, model_yolo, device):
     """
@@ -75,8 +86,7 @@ async def process_fundus_image(gcs_path: str, model_cfp, model_yolo, device):
         file_bytes = download_bytes_from_gcs(gcs_path)
 
         # 2. CFP 分類
-        # [注意] 確保 predict_cfp 內部使用 PIL.Image.open(io.BytesIO(file_bytes))
-        probs, input_tensor, rgb_img_float = predict_cfp(model_cfp, file_bytes, device)
+        probs, input_tensor, rgb_img_float, restore_info = predict_cfp(model_cfp, file_bytes, device)
         
         # 3. 邏輯分析
         result_json = analyze_results(probs)
@@ -90,18 +100,35 @@ async def process_fundus_image(gcs_path: str, model_cfp, model_yolo, device):
         
         # 只有在需要時才生成 CAM
         if target_idx is not None:
-            cam_bytes = generate_xai_image(model_cfp, input_tensor, target_idx, rgb_img_float)
+            cam_bytes, raw_cam_bytes = generate_xai_image(model_cfp, input_tensor, target_idx, rgb_img_float, restore_info=restore_info)
             
             if cam_bytes:
                 cam_url = await upload_to_gcs(cam_bytes, f"results/{request_id}_cam.jpg")
                 if cam_url:
                     image_urls['cam_url'] = cam_url
 
-        # 5. (Optional) YOLO 預留區
+            # 上傳 Resize 後的純熱力圖
+            if raw_cam_bytes:
+                raw_cam_url = await upload_to_gcs(raw_cam_bytes, f"results/{request_id}_cam_raw.jpg")
+                if raw_cam_url:
+                    image_urls['cam_raw_url'] = raw_cam_url
+
+        # 5. YOLO 分割邏輯
+        # 觸發條件：分析結果判斷為 DR (is_dr=True) 且 YOLO 模型已載入
         if result_json.get('is_dr', False) and model_yolo:
-             # yolo_bytes = run_yolo_segmentation(model_yolo, file_bytes) # 傳入 bytes 讓 yolo 自己處理
-             # yolo_url = await upload_to_gcs(yolo_bytes, f"results/{request_id}_yolo.jpg")
-             pass
+             logger.info(f"[{request_id}] DR detected, running YOLO segmentation...")
+             try:
+                 # 傳入 bytes 讓 yolo 模組處理
+                 yolo_bytes = run_yolo_segmentation(model_yolo, file_bytes)
+                 
+                 # 上傳結果
+                 if yolo_bytes:
+                     yolo_url = await upload_to_gcs(yolo_bytes, f"results/{request_id}_yolo.jpg")
+                     if yolo_url:
+                         image_urls['yolo_url'] = yolo_url
+             except Exception as e:
+                 logger.error(f"[{request_id}] YOLO Error: {e}")
+                 # YOLO 失敗不應影響主流程回傳，僅記錄錯誤即可
 
         # 6. 組裝最終回傳
         final_response = {

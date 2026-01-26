@@ -6,7 +6,7 @@ import uuid
 # 請確保這張圖片真的存在於您的 GCS Bucket 中，且 API 有權限讀取
 # 範例格式: "gs://bucket-name/folder/image.jpg"
 TEST_GCS_PATH = "gs://fundus-ai-project/test/1251_right.jpg" 
-API_URL = "http://localhost:8080/predict/cfp"
+API_URL = "https://cji102-model-test-133954051088.asia-east1.run.app/predict/cfp"
 
 def test_json_api():
     # 1. 建構符合 Pydantic 定義的 JSON Payload
@@ -36,6 +36,10 @@ def test_json_api():
             print(f"✅ Status Code: {response.getcode()}")
             
             response_body = response.read().decode('utf-8')
+            
+            # --- 查看回傳內容 ---
+            print(f"🔍 Raw Response Body: '{response_body}'") 
+
             response_json = json.loads(response_body)
             
             print("📄 Response JSON:")
@@ -57,3 +61,4 @@ def test_json_api():
 
 if __name__ == "__main__":
     test_json_api()
+
