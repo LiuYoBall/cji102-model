@@ -38,23 +38,10 @@ def generate_xai_image(model, input_tensor, target_idx, rgb_img_float, restore_i
         grayscale_cam = cam(input_tensor=input_tensor, targets=targets)
         grayscale_cam = grayscale_cam[0, :]
         
-        # --- 1. 製作原本的疊圖 (Overlay) ---
-        visualization = show_cam_on_image(rgb_img_float, grayscale_cam, use_rgb=True)
-        
-        # 自適應亮度遮罩 (Adaptive Masking)
-        # 避免在全黑背景上顯示熱力圖
-        src_img_uint8 = (rgb_img_float * 255).astype(np.uint8)
-        gray = cv2.cvtColor(src_img_uint8, cv2.COLOR_RGB2GRAY)
-        # 亮度 > 10 才顯示 CAM
-        _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
-        mask_rgb = cv2.merge([mask, mask, mask])
-        final_vis = cv2.bitwise_and(visualization, mask_rgb)
-        # 先定義 overlay_bytes並使用不同的變數名稱避免與下方的混淆
-        is_overlay_success, overlay_buf = cv2.imencode(".jpg", cv2.cvtColor(final_vis, cv2.COLOR_RGB2BGR))
-        overlay_bytes = overlay_buf.tobytes() if is_overlay_success else None
-        
-        # --- 2. 製作 Resize 回原圖尺寸的純熱力圖 (Raw Heatmap) ---
+        # 預設回傳 None，相容 controller 的接收格式，並跳過疊圖處理
+        overlay_bytes = None 
         raw_heatmap_bytes = None
+        
         if restore_info is not None:
             full_w, full_h = restore_info['full_shape']
             y1, y2, x1, x2 = restore_info['crop_coords']
@@ -63,32 +50,49 @@ def generate_xai_image(model, input_tensor, target_idx, rgb_img_float, restore_i
             crop_w = x2 - x1
             crop_h = y2 - y1
             
-            # 2. 將 384x384 的 CAM Resize 到 "裁切後尺寸" 
+            # 2. 將 384x384 的 CAM Resize 回"裁切後尺寸"，並貼回全尺寸畫布
             cam_crop_resized = cv2.resize(grayscale_cam, (crop_w, crop_h))
-            
-            # 3. 建立一個全零的原始尺寸畫布
             full_cam = np.zeros((full_h, full_w), dtype=np.float32)
-            
-            # 4. 將 Resize 後的 CAM 貼回原本的位置 (Padding Back)
             full_cam[y1:y2, x1:x2] = cam_crop_resized
             
-            # 5. 上色 (0~1 -> 0~255 -> JET)
-            heatmap_uint8 = (255 * full_cam).astype(np.uint8)
+            # 3. 將 384x384 的 RGB 影像也 Resize 回"裁切後尺寸"，並貼回全尺寸畫布
+            src_img_uint8 = (rgb_img_float * 255).astype(np.uint8)
+            img_crop_resized = cv2.resize(src_img_uint8, (crop_w, crop_h))
+            full_img = np.zeros((full_h, full_w, 3), dtype=np.uint8)
+            full_img[y1:y2, x1:x2] = img_crop_resized
             
-            # 如果直接 ApplyColorMap，原本是 0 的地方會變成深藍色 (JET 的 0)
+            # 4. 在「全尺寸畫布」上計算 MASK 座標
+            gray = cv2.cvtColor(full_img, cv2.COLOR_RGB2GRAY)
+            # 亮度 > 10 視為有效區域 (過濾掉 Padding 與原圖的黑色背景)
+            _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+            
+            # 5. 將全尺寸 CAM 上色
+            heatmap_uint8 = (255 * full_cam).astype(np.uint8)
             heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
             
-            # 將原本 padding 的區域塗黑 (因為 applyColorMap 會把 0 變成藍色)
-            # 建立 mask: 1 代表有內容，0 代表 padding
-            mask_pad = np.zeros((full_h, full_w), dtype=np.uint8)
-            mask_pad[y1:y2, x1:x2] = 255
-            # 使用 bitwise_and 只保留中間有值的部分，邊緣變回黑色 (RGB=0,0,0)
-            heatmap_color = cv2.bitwise_and(heatmap_color, heatmap_color, mask=mask_pad)
-            # 編碼純熱力圖
-            is_raw_success, raw_buf = cv2.imencode(".jpg", heatmap_color) # heatmap 預設就是 BGR，不需轉換
+            # 6. 套用遮罩：保留有內容的區域，邊緣 Padding 與極黑背景變回黑色
+            final_heatmap = cv2.bitwise_and(heatmap_color, heatmap_color, mask=mask)
+            
+            # 7. 編碼為 JPG
+            is_raw_success, raw_buf = cv2.imencode(".jpg", final_heatmap)
+            if is_raw_success:
+                raw_heatmap_bytes = raw_buf.tobytes()
+                
+        else:
+            # 容錯處理：若無 restore_info，則以輸入尺寸計算
+            src_img_uint8 = (rgb_img_float * 255).astype(np.uint8)
+            gray = cv2.cvtColor(src_img_uint8, cv2.COLOR_RGB2GRAY)
+            _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
+            
+            heatmap_uint8 = (255 * grayscale_cam).astype(np.uint8)
+            heatmap_color = cv2.applyColorMap(heatmap_uint8, cv2.COLORMAP_JET)
+            final_heatmap = cv2.bitwise_and(heatmap_color, heatmap_color, mask=mask)
+            
+            is_raw_success, raw_buf = cv2.imencode(".jpg", final_heatmap)
             if is_raw_success:
                 raw_heatmap_bytes = raw_buf.tobytes()
 
+        # 回傳 None 與純熱力圖的 bytes，完美銜接外部呼叫
         return overlay_bytes, raw_heatmap_bytes
 
     except Exception as e:
