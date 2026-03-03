@@ -15,6 +15,7 @@ env/
 .env             
 test_api_json.py # 客戶端測試腳本 
 tests/           # 單元測試資料夾
+train/           # 訓練程式資料夾
 
 # --- 3. 敏感資料  ---
 *.json           #  GCP Key 
